@@ -93,8 +93,6 @@ st.markdown("<h3 style='text-align: center; margin-bottom: 20px; color: #202124;
 col_spacer1, col_input, col_btn, col_spacer2 = st.columns([0.1, 4, 0.8, 0.1], gap="small")
 with col_input:
     user_input = st.text_input("검색", placeholder="종목명 (예: 엔비디아)", label_visibility="collapsed")
-with col_btn:
-    search_click = st.button("🔍")
 
 if user_input:
     with st.spinner('검색 중...'):
