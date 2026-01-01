@@ -2,107 +2,151 @@ import streamlit as st
 import google.generativeai as genai
 import yfinance as yf
 import plotly.graph_objects as go
+import pandas as pd
 import os
+import feedparser
+from urllib.parse import quote
 from dotenv import load_dotenv
-import pandas as pd  # <-- 이 줄이 꼭 있어야 에러가 안 납니다!
 
-# 1. API 및 모델 설정
+# 1. 초기 설정
 load_dotenv()
-api_key = os.getenv("GEMINI_API_KEY")
-if not api_key or api_key == "여기에_본인의_API_키를_직접_넣으세요":
-    api_key = "AIzaSy..." # 실사용 시 직접 입력하는 것이 가장 확실합니다.
-
+api_key = os.getenv("GEMINI_API_KEY") or "AIzaSy..." 
 genai.configure(api_key=api_key)
 model = genai.GenerativeModel('gemini-2.5-flash')
 
-# 2. 화면 구성 및 스타일
-st.set_page_config(page_title="경제/주식 마스터 비서", page_icon="📈", layout="wide")
-st.title("📊 AI 경제/주식 통합 마스터 비서")
+# 2. 디자인 설정 (깔끔한 화이트 테마)
+st.set_page_config(page_title="PRO INVESTOR AI", page_icon="📈", layout="wide")
 
-# 세 가지 기능을 탭으로 분리
-tab1, tab2, tab3 = st.tabs(["💡 지식 Q&A", "📰 뉴스 분석", "📈 실시간 차트"])
-
-# --- 탭 1: 지식 Q&A ---
-with tab1:
-    st.subheader("궁금한 경제 지식을 물어보세요")
-    question = st.text_input("질문", placeholder="예: 양적완화가 주식 시장에 주는 영향은?")
-    if st.button("AI 분석 요청"):
-        with st.spinner('답변 생성 중...'):
-            try:
-                response = model.generate_content(f"경제 전문가로서 아주 친절하게 답변해줘: {question}")
-                st.markdown(response.text)
-            except Exception as e:
-                st.error(f"오류: {e}")
-
-# --- 탭 2: 뉴스 분석 ---
-with tab2:
-    st.subheader("최신 뉴스 실시간 분석")
-    ticker_news = st.text_input("종목 코드 입력", value="NVDA", key="news_ticker")
-    if st.button("뉴스 분석 시작"):
-        with st.spinner('뉴스를 수집하고 분석 중입니다...'):
-            try:
-                stock = yf.Ticker(ticker_news)
-                news = stock.news
-                if not news:
-                    st.warning("최신 뉴스를 찾을 수 없습니다.")
-                else:
-                    news_titles = "\n".join([f"- {n.get('title') or n.get('headline')}" for n in news[:5]])
-                    prompt = f"{ticker_news}의 최신 뉴스 제목들을 보고 주가 전망을 요약해줘:\n{news_titles}"
-                    response = model.generate_content(prompt)
-                    st.info(f"### 🤖 {ticker_news} 뉴스 분석 요약")
-                    st.write(response.text)
-                    with st.expander("뉴스 원문 보기"):
-                        for n in news[:5]:
-                            st.write(f"- [{n.get('title') or n.get('headline')}]({n.get('link')})")
-            except Exception as e:
-                st.error(f"뉴스 에러: {e}")
-
-# --- 탭 3: 실시간 차트 (데이터 정밀 보정 버전) ---
-with tab3:
-    st.subheader("주가 변동 추이 확인")
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        ticker_chart = st.text_input("분석할 종목", value="NVDA", key="chart_ticker")
-        period = st.selectbox("기간", ["1mo", "3mo", "6mo", "1y", "5y"], index=0)
+st.markdown("""
+    <style>
+    /* 전체 배경 및 텍스트: 화이트 & 블랙 */
+    html, body, [class*="css"], .stApp { 
+        background-color: #FFFFFF !important; 
+        color: #000000 !important; 
+    }
     
-    with col2:
-        try:
-            # 1. 데이터 다운로드
-            data = yf.download(ticker_chart, period=period)
-            
-            if data.empty:
-                st.error("주가 데이터를 가져올 수 없습니다. 종목 코드를 확인해 주세요.")
-            else:
-                # [핵심 수정] 최신 yfinance의 중복 열 이름을 정리합니다.
-                if isinstance(data.columns, pd.MultiIndex):
-                    data.columns = data.columns.get_level_values(0)
-                
-                # 2. 인덱스 리셋 (날짜를 차트가 인식하기 쉽게 만듦)
-                data = data.reset_index()
+    /* 사이드바 스타일 */
+    section[data-testid="stSidebar"] { 
+        background-color: #F8F9FA !important; 
+        border-right: 1px solid #EEEEEE !important; 
+    }
 
-                # 3. 캔들스틱 차트 생성
-                fig = go.Figure(data=[go.Candlestick(
-                    x=data['Date'],
-                    open=data['Open'],
-                    high=data['High'],
-                    low=data['Low'],
-                    close=data['Close'],
-                    name=ticker_chart
-                )])
-                
-                # 4. 디자인 설정
-                fig.update_layout(
-                    title=f"{ticker_chart} 상세 주가 흐름",
-                    yaxis_title="가격",
-                    template="plotly_dark",
-                    xaxis_rangeslider_visible=True, # 하단 범위 조절 바 추가
-                    height=500
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-                st.success(f"현재 {ticker_chart}의 데이터를 성공적으로 불러왔습니다.")
-        except Exception as e:
-            st.error(f"차트 생성 중 오류가 발생했습니다: {e}")
+    /* 지표 박스 크기 통일 (칼각 정렬) */
+    div[data-testid="stMetric"] {
+        background-color: #FFFFFF !important;
+        border: 1px solid #EEEEEE !important;
+        border-radius: 12px !important;
+        padding: 20px !important;
+        min-height: 130px !important; /* 높이 고정 */
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.02) !important;
+    }
+
+    /* 버튼 스타일 (레드 포인트) */
+    div.stButton > button:first-child { 
+        background-color: #FF0000 !important; 
+        color: #FFFFFF !important; 
+        border-radius: 8px !important; 
+        font-weight: 700; 
+        width: 100%; 
+        height: 45px; 
+        border: none; 
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# 3. 보조 함수 (환율, 뉴스)
+@st.cache_data(ttl=3600)
+def get_exchange_rate():
+    try:
+        df = yf.download("USDKRW=X", period="1d")
+        return float(df['Close'].iloc[-1])
+    except: return 1360.0
+
+def get_google_news(search_query):
+    try:
+        encoded = quote(search_query)
+        # 한국어 뉴스 검색
+        url = f"https://news.google.com/rss/search?q={encoded}&hl=ko&gl=KR&ceid=KR:ko"
+        feed = feedparser.parse(url)
+        return feed.entries[:10]
+    except: return []
+
+exchange_rate = get_exchange_rate()
+
+# 4. 사이드바 구성
+with st.sidebar:
+    st.markdown("<h2 style='color: black;'>📈 PRO AI</h2>", unsafe_allow_html=True)
+    menu = st.radio("메뉴 선택", ["💡 지식 Q&A", "📰 구글 뉴스 분석", "📈 실시간 차트"], index=2)
+    st.divider()
+    ticker = st.text_input("종목 코드 (Ticker)", value="AAPL").upper()
+    if menu == "📈 실시간 차트":
+        period = st.select_slider("조회 기간", options=["1mo", "3mo", "6mo", "1y", "5y"], value="1y")
+
+# 5. 메인 로직
+try:
+    stock_obj = yf.Ticker(ticker)
+    info = stock_obj.info
+    hist = stock_obj.history(period="5d")
+    
+    if not hist.empty:
+        # 데이터 정리
+        if isinstance(hist.columns, pd.MultiIndex): hist.columns = hist.columns.get_level_values(0)
+        
+        current_p = float(hist['Close'].iloc[-1])
+        prev_p = float(hist['Close'].iloc[-2])
+        change_pct = ((current_p - prev_p) / prev_p) * 100
+        
+        current_p_krw = current_p * exchange_rate
+        high_p_krw = float(info.get('fiftyTwoWeekHigh', 0)) * exchange_rate
+
+        # 종목명 표시
+        st.title(f"{info.get('shortName', ticker)}")
+        
+        # 지표 박스 (원화/달러 병기)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("현재가", f"₩{current_p_krw:,.0f} (${current_p:,.2f})", f"{change_pct:+.2f}%")
+        m2.metric("52주 최고가", f"₩{high_p_krw:,.0f} (${info.get('fiftyTwoWeekHigh', 0):,.2f})")
+        m3.metric("시가총액", f"${info.get('marketCap', 0)/1e12:.2f}T")
+        m4.metric("P/E Ratio", f"{info.get('trailingPE', 0):.2f}")
+        
+        st.divider()
+
+        # 메뉴별 기능
+        if menu == "📰 구글 뉴스 분석":
+            st.subheader("🌐 실시간 구글 뉴스 분석")
+            if st.button("🔥 뉴스 하이라이트 요약 시작"):
+                with st.spinner('구글 뉴스를 분석 중입니다...'):
+                    news = get_google_news(f"{info.get('shortName', ticker)} 주가 전망")
+                    if news:
+                        news_txt = "\n".join([f"- {n.title}" for n in news[:5]])
+                        res = model.generate_content(f"{ticker} 최신 뉴스 기반 투자 리포트 작성해줘:\n{news_txt}")
+                        st.info(res.text)
+                        
+                        # 원본 링크 표시
+                        with st.expander("🔗 원본 뉴스 링크"):
+                            for n in news[:5]: st.write(f"- [{n.title}]({n.link})")
+                    else: st.warning("최신 뉴스를 가져오지 못했습니다.")
+
+        elif menu == "💡 지식 Q&A":
+            st.subheader("💡 경제 지식 Q&A")
+            user_q = st.text_input("질문을 입력하세요")
+            if st.button("질문하기"):
+                with st.spinner('AI 생각 중...'):
+                    res = model.generate_content(f"경제 전문가로서 답변해줘: {user_q}")
+                    st.write(res.text)
+
+        elif menu == "📈 실시간 차트":
+            st.subheader(f"📈 {ticker} 차트 ({period})")
+            full_h = stock_obj.history(period=period).reset_index()
+            if isinstance(full_h.columns, pd.MultiIndex): full_h.columns = full_h.columns.get_level_values(0)
             
-st.divider()
-st.caption("제미나이 프로와 함께 만든 나만의 주식 분석 도구 v1.0")
+            # 깔끔한 화이트 테마 차트
+            fig = go.Figure(data=[go.Candlestick(x=full_h['Date'], open=full_h['Open'], high=full_h['High'], low=full_h['Low'], close=full_h['Close'], increasing_line_color='#22C55E', decreasing_line_color='#EF4444')])
+            fig.update_layout(template="plotly_white", height=600, xaxis_rangeslider_visible=False, margin=dict(l=0, r=0, t=0, b=0))
+            st.plotly_chart(fig, use_container_width=True)
+            
+except Exception as e:
+    st.error(f"실행 중 오류가 발생했습니다: {e}")
