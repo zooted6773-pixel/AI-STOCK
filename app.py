@@ -92,7 +92,7 @@ def get_google_news(search_query, lang='ko'):
 exchange_rate = get_exchange_rate()
 
 # 5. 메인 화면
-st.markdown("<h3 style='text-align: center; margin-bottom: 30px; color: #202124;'>📈 Google Finance AI</h3>", unsafe_allow_html=True)
+st.markdown("<h3 style='text-align: center; margin-bottom: 30px; color: #202124;'>📈 PRO Finance AI</h3>", unsafe_allow_html=True)
 
 # [수정됨] 돋보기 버튼 제거, 검색창을 중앙에 넓게 배치
 col_spacer1, col_input, col_spacer2 = st.columns([1, 6, 1])
