@@ -14,23 +14,31 @@ api_key = os.getenv("GEMINI_API_KEY") or "AIzaSy..."
 genai.configure(api_key=api_key)
 model = genai.GenerativeModel('gemini-2.5-flash')
 
-# 2. 디자인 설정 (구글 스타일)
+# 2. 디자인 설정
 st.set_page_config(page_title="PRO INVESTOR AI", page_icon="📈", layout="wide")
 
 st.markdown("""
     <style>
     html, body, [class*="css"], .stApp { background-color: #FFFFFF !important; color: #202124 !important; font-family: 'Google Sans', sans-serif; }
     
+    /* 검색창 스타일 (버튼 없이 혼자 예쁘게) */
     div[data-testid="stTextInput"] input {
-        border-radius: 24px !important; border: 1px solid #dfe1e5 !important;
-        padding: 15px 25px !important; font-size: 16px !important;
-        box-shadow: 0 2px 5px rgba(32,33,36,0.05) !important; height: 50px !important;
+        border-radius: 30px !important; /* 더 둥글게 */
+        border: 1px solid #dfe1e5 !important;
+        padding: 15px 25px !important;
+        font-size: 18px !important; /* 글자 키움 */
+        text-align: center; /* 입력 텍스트 가운데 정렬 */
+        box-shadow: 0 2px 5px rgba(32,33,36,0.1) !important;
+        height: 60px !important; /* 높이 키움 */
+        transition: all 0.3s;
     }
     div[data-testid="stTextInput"] input:focus {
-        box-shadow: 0 2px 8px rgba(32,33,36,0.15) !important; border-color: #4285F4 !important; outline: none !important;
+        box-shadow: 0 4px 12px rgba(32,33,36,0.2) !important;
+        border-color: #4285F4 !important;
+        outline: none !important;
     }
 
-    /* 버튼 스타일 */
+    /* 나머지 버튼 스타일 (답변받기, 뉴스요약 등) */
     div.stButton > button {
         background-color: #4285F4 !important; color: #FFFFFF !important;
         border-radius: 24px !important; height: 50px !important; border: none !important;
@@ -64,7 +72,7 @@ def get_ticker_auto(name):
         return response.text.strip()
     except: return name
 
-# 4. 보조 함수 (한국어/영어 뉴스 동시 수집)
+# 4. 보조 함수
 @st.cache_data(ttl=3600)
 def get_exchange_rate():
     try:
@@ -75,24 +83,23 @@ def get_exchange_rate():
 def get_google_news(search_query, lang='ko'):
     try:
         encoded = quote(search_query)
-        # 언어 설정에 따라 검색 주소 변경
-        if lang == 'en':
-            url = f"https://news.google.com/rss/search?q={encoded}&hl=en-US&gl=US&ceid=US:en"
-        else:
-            url = f"https://news.google.com/rss/search?q={encoded}&hl=ko&gl=KR&ceid=KR:ko"
-            
+        if lang == 'en': url = f"https://news.google.com/rss/search?q={encoded}&hl=en-US&gl=US&ceid=US:en"
+        else: url = f"https://news.google.com/rss/search?q={encoded}&hl=ko&gl=KR&ceid=KR:ko"
         feed = feedparser.parse(url)
-        return feed.entries[:5] # 각각 5개씩
+        return feed.entries[:5]
     except: return []
 
 exchange_rate = get_exchange_rate()
 
 # 5. 메인 화면
-st.markdown("<h3 style='text-align: center; margin-bottom: 20px; color: #202124;'>📈 Google Finance AI</h3>", unsafe_allow_html=True)
+st.markdown("<h3 style='text-align: center; margin-bottom: 30px; color: #202124;'>📈 Google Finance AI</h3>", unsafe_allow_html=True)
 
-col_spacer1, col_input, col_btn, col_spacer2 = st.columns([0.1, 4, 0.8, 0.1], gap="small")
+# [수정됨] 돋보기 버튼 제거, 검색창을 중앙에 넓게 배치
+col_spacer1, col_input, col_spacer2 = st.columns([1, 6, 1])
+
 with col_input:
-    user_input = st.text_input("검색", placeholder="종목명 (예: 엔비디아)", label_visibility="collapsed")
+    # 돋보기 없이 깔끔한 입력창
+    user_input = st.text_input("검색", placeholder="종목명 입력 후 Enter (예: 엔비디아)", label_visibility="collapsed")
 
 if user_input:
     with st.spinner('검색 중...'):
@@ -126,60 +133,46 @@ if user_input:
             
             st.markdown("<br>", unsafe_allow_html=True)
 
-            tab1, tab2, tab3 = st.tabs(["💡 Q&A (팩트체크)", "📰 뉴스", "📈 차트"])
+            tab1, tab2, tab3 = st.tabs(["💡 팩트체크", "📰 뉴스", "📈 차트"])
 
             with tab1:
-                st.markdown("#### 💡 AI 팩트체크 & 상담")
-                user_q = st.text_input("질문 입력", placeholder="예: 인텔에 투자했다는 게 사실이야?")
+                st.markdown("#### 💡 AI 투자 상담 & 팩트체크")
+                user_q = st.text_input("질문 입력", placeholder="예: 인텔 인수설 진짜야?")
                 
                 if st.button("답변 받기", key='qa'):
-                    with st.spinner('🇺🇸 미국 원문 뉴스까지 뒤져보는 중...'):
-                        
-                        # [핵심] 한국 뉴스 + 미국 뉴스 동시 검색
+                    with st.spinner('🇺🇸 미국 뉴스 교차 검증 중...'):
                         news_ko = get_google_news(f"{user_input} {user_q}", lang='ko')
-                        
-                        # 미국 주식이면 영어로도 검색 (더 정확함)
                         news_en = []
                         if not is_kr_stock:
-                            # AI에게 영어 검색어 생성을 요청해도 되지만, 간단히 종목명+질문으로 처리
-                            # 더 정확하게 하려면 영문명(info['shortName'])을 사용
                             eng_name = info.get('shortName', ticker)
                             news_en = get_google_news(f"{eng_name} {user_q}", lang='en')
 
-                        # 검색 결과 합치기
                         all_news = news_ko + news_en
                         news_context = "\n".join([f"- [{n.title}] (출처: {n.source.title if hasattr(n, 'source') else 'Google'})" for n in all_news])
                         
-                        # AI에게 판단 요청
                         prompt = f"""
                         당신은 팩트체크 전문 투자 분석가입니다.
-                        사용자는 '{user_input}'에 대해 질문하고 있으며, 루머인지 사실인지 확인하고 싶어합니다.
+                        사용자 질문: "{user_q}" (대상: {user_input})
                         
-                        질문: "{user_q}"
-                        
-                        [검색된 최신 뉴스 (한국어 및 영어)]
+                        [검색된 뉴스]
                         {news_context}
                         
-                        [분석 가이드]
-                        1. 위 뉴스 목록을 철저히 분석하여 사실 여부를 판단하세요.
-                        2. 만약 뉴스에 명확한 근거가 있다면 "뉴스에 따르면~" 이라고 출처를 밝히세요.
-                        3. 뉴스에도 없다면 "현재 언론에 보도된 바 없습니다"라고 명확히 하세요.
-                        4. 영어 뉴스가 있다면 그 내용도 한국어로 해석해서 알려주세요.
+                        [가이드]
+                        1. 뉴스에 기반해 사실 여부를 판단하세요.
+                        2. 뉴스에 없으면 "보도된 바 없다"고 하세요.
+                        3. 한국어로 답변하세요.
                         """
                         res = model.generate_content(prompt)
                         st.write(res.text)
                         
-                        # 참고한 뉴스 링크 보여주기
                         if all_news:
-                            with st.expander("🔍 AI가 참고한 뉴스 원문 보기"):
-                                for n in all_news: st.write(f"- [{n.title}]({n.link})")
-                        else:
-                            st.caption("관련된 최신 뉴스가 검색되지 않았습니다.")
+                            with st.expander("뉴스 출처 보기"):
+                                for n in all_news[:5]: st.write(f"- [{n.title}]({n.link})")
 
             with tab2:
                 st.markdown("#### 📰 최신 뉴스")
                 if st.button("🔥 요약 리포트", key='news'):
-                    with st.spinner('뉴스 수집 중...'):
+                    with st.spinner('분석 중...'):
                         news = get_google_news(f"{user_input} 투자", lang='ko')
                         if news:
                             txt = "\n".join([f"- {n.title}" for n in news[:5]])
