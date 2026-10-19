@@ -2,11 +2,13 @@ import streamlit as st
 import google.generativeai as genai
 import yfinance as yf
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import pandas as pd
 import os
 import feedparser
 from urllib.parse import quote
 from dotenv import load_dotenv
+import scorecard as sc
 
 # 1. 초기 설정
 load_dotenv()
@@ -89,6 +91,30 @@ def get_google_news(search_query, lang='ko'):
         return feed.entries[:5]
     except: return []
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_news_sentiment(name, eng_name, is_kr):
+    """실시간 뉴스 검색 + AI 감성 점수 (30분 캐시)"""
+    news = get_google_news(f"{name} 주가", lang='ko')
+    if not is_kr:
+        news += get_google_news(f"{eng_name} stock", lang='en')
+    headlines = [n.title for n in news]
+    links = [(n.title, n.link) for n in news]
+    if not headlines:
+        return None, links
+    try:
+        res = model.generate_content(sc.sentiment_prompt(name, headlines))
+        return sc.parse_sentiment(res.text), links
+    except Exception:
+        return None, links
+
+def render_score_table(items):
+    rows = []
+    for name, value, pts, max_pts, note in items:
+        rows.append({"항목": name, "현재값": value,
+                     "점수": "-" if pts is None else f"{pts:.1f} / {max_pts:g}",
+                     "해석": note})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
 exchange_rate = get_exchange_rate()
 
 # 5. 메인 화면
@@ -133,7 +159,94 @@ if user_input:
             
             st.markdown("<br>", unsafe_allow_html=True)
 
-            tab1, tab2, tab3 = st.tabs(["💡 팩트체크", "📰 뉴스", "📈 차트"])
+            tab0, tab1, tab2, tab3 = st.tabs(["🎯 매수 타이밍", "💡 팩트체크", "📰 뉴스", "📈 차트"])
+
+            with tab0:
+                st.markdown("#### 🎯 매수 타이밍 평가표")
+                with st.expander("⚙️ 가중치 설정", expanded=False):
+                    w1, w2, w3 = st.columns(3)
+                    w_tech = w1.slider("기술적 분석", 0, 100, 40, 5)
+                    w_fund = w2.slider("펀더멘털/전망", 0, 100, 40, 5)
+                    w_senti = w3.slider("뉴스 심리", 0, 100, 20, 5)
+
+                with st.spinner('지표·실적·뉴스 분석 중...'):
+                    price_h = stock_obj.history(period="1y")
+                    if isinstance(price_h.columns, pd.MultiIndex): price_h.columns = price_h.columns.get_level_values(0)
+                    ind = sc.add_indicators(price_h)
+                    tech_score, tech_items = sc.technical_score(ind)
+                    fund_score, fund_items = sc.fundamental_score(info, current_p, sc.get_eps_growth_next_year(stock_obj))
+                    senti, news_links = get_news_sentiment(user_input, info.get('shortName', ticker), is_kr_stock)
+                    senti_score = senti['score'] if senti else None
+
+                total, eff_w = sc.combine_scores(tech_score, fund_score, senti_score,
+                                                 {'tech': w_tech, 'fund': w_fund, 'senti': w_senti})
+                if total is None:
+                    st.warning("가중치를 하나 이상 0보다 크게 설정하세요.")
+                else:
+                    grade, desc, color = sc.verdict(total)
+                    g_col, s_col = st.columns([1, 1])
+                    with g_col:
+                        gauge = go.Figure(go.Indicator(
+                            mode="gauge+number", value=total, number={'suffix': "점"},
+                            gauge={'axis': {'range': [0, 100]}, 'bar': {'color': color},
+                                   'steps': [{'range': [0, 30], 'color': '#FEE2E2'}, {'range': [30, 45], 'color': '#FFEDD5'},
+                                             {'range': [45, 60], 'color': '#FEF9C3'}, {'range': [60, 75], 'color': '#ECFCCB'},
+                                             {'range': [75, 100], 'color': '#DCFCE7'}]}))
+                        gauge.update_layout(height=260, margin=dict(l=20, r=20, t=20, b=0))
+                        st.plotly_chart(gauge, use_container_width=True)
+                    with s_col:
+                        st.markdown(f"<h3 style='color:{color};margin-top:30px;'>{grade}</h3><p>{desc}</p>", unsafe_allow_html=True)
+                        weight_txt = " · ".join(f"{k} {v*100:.0f}%" for k, v in eff_w.items())
+                        st.caption(f"적용 가중치: {weight_txt}")
+
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("📊 기술적 분석", f"{tech_score:.0f}점")
+                    c2.metric("🏢 펀더멘털/전망", f"{fund_score:.0f}점" if fund_score is not None else "평가 불가")
+                    c3.metric("📰 뉴스 심리", f"{senti_score}점" if senti_score is not None else "평가 불가")
+
+                st.markdown("##### 📊 기술적 분석 상세")
+                render_score_table(tech_items)
+
+                st.markdown("##### 🏢 펀더멘털 · 실적 · 향후 예상치 상세")
+                if fund_score is None:
+                    st.info("ETF·코인·원자재 등 재무 데이터가 없는 종목은 펀더멘털 점수를 제외하고 계산합니다.")
+                render_score_table(fund_items)
+
+                st.markdown("##### 📰 뉴스 심리 상세")
+                if senti:
+                    st.write(f"**요약:** {senti['summary']}")
+                    p_col, n_col = st.columns(2)
+                    p_col.markdown("**👍 긍정 요인**\n" + "".join(f"\n- {x}" for x in senti['positive']))
+                    n_col.markdown("**👎 부정 요인**\n" + "".join(f"\n- {x}" for x in senti['negative']))
+                else:
+                    st.info("뉴스 감성 분석을 수행하지 못해 뉴스 심리 점수를 제외했습니다.")
+                if news_links:
+                    with st.expander("분석에 사용된 뉴스"):
+                        for title, link in news_links: st.write(f"- [{title}]({link})")
+
+                st.markdown("##### 📈 기술적 지표 차트")
+                ch = ind.tail(180).reset_index()
+                fig_ta = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.03)
+                fig_ta.add_trace(go.Candlestick(x=ch['Date'], open=ch['Open'], high=ch['High'], low=ch['Low'], close=ch['Close'],
+                                                increasing_line_color='#22C55E', decreasing_line_color='#EF4444', name='가격'), row=1, col=1)
+                fig_ta.add_trace(go.Scatter(x=ch['Date'], y=ch['BB_UP'], line=dict(color='#94A3B8', width=1), name='BB 상단'), row=1, col=1)
+                fig_ta.add_trace(go.Scatter(x=ch['Date'], y=ch['BB_LOW'], line=dict(color='#94A3B8', width=1), fill='tonexty',
+                                            fillcolor='rgba(148,163,184,0.12)', name='BB 하단'), row=1, col=1)
+                fig_ta.add_trace(go.Scatter(x=ch['Date'], y=ch['MA20'], line=dict(color='#F59E0B', width=1.2), name='MA20'), row=1, col=1)
+                fig_ta.add_trace(go.Scatter(x=ch['Date'], y=ch['MA60'], line=dict(color='#8B5CF6', width=1.2), name='MA60'), row=1, col=1)
+                fig_ta.add_trace(go.Scatter(x=ch['Date'], y=ch['RSI'], line=dict(color='#4285F4'), name='RSI'), row=2, col=1)
+                fig_ta.add_hline(y=70, line=dict(color='#EF4444', dash='dot'), row=2, col=1)
+                fig_ta.add_hline(y=30, line=dict(color='#22C55E', dash='dot'), row=2, col=1)
+                fig_ta.add_trace(go.Bar(x=ch['Date'], y=ch['MACD_HIST'], name='MACD Hist',
+                                        marker_color=['#22C55E' if v >= 0 else '#EF4444' for v in ch['MACD_HIST'].fillna(0)]), row=3, col=1)
+                fig_ta.add_trace(go.Scatter(x=ch['Date'], y=ch['MACD'], line=dict(color='#0EA5E9', width=1.2), name='MACD'), row=3, col=1)
+                fig_ta.add_trace(go.Scatter(x=ch['Date'], y=ch['MACD_SIGNAL'], line=dict(color='#F97316', width=1.2), name='Signal'), row=3, col=1)
+                fig_ta.update_layout(template="plotly_white", height=650, xaxis_rangeslider_visible=False, showlegend=False,
+                                     margin=dict(l=0, r=0, t=10, b=0))
+                fig_ta.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
+                fig_ta.update_yaxes(title_text="MACD", row=3, col=1)
+                st.plotly_chart(fig_ta, use_container_width=True)
+                st.caption("※ 본 점수는 공개 데이터 기반 참고 지표이며 투자 권유가 아닙니다. 최종 판단과 책임은 투자자 본인에게 있습니다.")
 
             with tab1:
                 st.markdown("#### 💡 AI 투자 상담 & 팩트체크")
