@@ -72,16 +72,39 @@ def _interp(x, xp, fp):
 # ---------------------------------------------------------------------------
 # 2. 기술적 분석 점수 (100점 만점)
 # ---------------------------------------------------------------------------
-def technical_score(df):
-    """지표가 추가된 DataFrame을 받아 (총점, 항목별 리스트) 반환.
+def latest_values(df):
+    """지표가 추가된 DataFrame에서 채점에 필요한 최신 값만 뽑는다."""
+    last = df.iloc[-1]
+    v = {k: last.get(src) for k, src in (('close', 'Close'), ('rsi', 'RSI'), ('bb_pctb', 'BB_PCTB'),
+                                         ('ma20', 'MA20'), ('ma60', 'MA60'), ('ma120', 'MA120'),
+                                         ('stoch_k', 'STOCH_K'), ('stoch_d', 'STOCH_D'))}
+    width = last.get('BB_WIDTH')
+    v['bb_squeeze'] = bool(_valid(width) and width < df['BB_WIDTH'].tail(120).quantile(0.2))
+    hist = df['MACD_HIST'].dropna()
+    if len(hist) >= 6:
+        v['macd_hist'], v['macd_hist_prev'] = float(hist.iloc[-1]), float(hist.iloc[-2])
+        v['macd_recent_cross'] = bool(((hist.iloc[-6:-1] < 0) & (hist.iloc[-1] > 0)).any())
+    return {k: (float(x) if isinstance(x, (int, float, np.floating)) and not isinstance(x, bool) else x)
+            for k, x in v.items()}
 
+
+def technical_score(df):
+    """지표가 추가된 DataFrame을 받아 (총점, 항목별 리스트) 반환."""
+    return technical_score_from_values(latest_values(df))
+
+
+def technical_score_from_values(v):
+    """최신 지표 값(dict)으로 채점. 웹에서 직접 찾은 값으로도 채점할 수 있다.
+
+    키: close, rsi, bb_pctb, bb_squeeze, macd_hist, macd_hist_prev, macd_recent_cross,
+        ma20, ma60, ma120, stoch_k, stoch_d  (없는 값은 생략 → 중립 처리)
     항목: (이름, 현재값 표시, 획득점수, 배점, 해석)
     """
-    last = df.iloc[-1]
+    last = v
     items = []
 
     # RSI (25점): 과매도일수록 고득점
-    rsi = last.get('RSI')
+    rsi = last.get('rsi')
     if _valid(rsi):
         pts = _interp(rsi, [20, 30, 50, 70, 80], [25, 22, 12, 2, 0])
         if rsi <= 30:
@@ -95,7 +118,7 @@ def technical_score(df):
         items.append(('RSI(14)', '-', 12.5, 25, '데이터 부족 (중립 처리)'))
 
     # 볼린저밴드 %B (25점): 하단 밴드 근접/이탈일수록 고득점
-    pctb = last.get('BB_PCTB')
+    pctb = last.get('bb_pctb')
     if _valid(pctb):
         pts = _interp(pctb, [-0.1, 0.0, 0.5, 1.0, 1.1], [25, 23, 12, 2, 0])
         if pctb <= 0.05:
@@ -106,19 +129,18 @@ def technical_score(df):
             note = '중심선 아래 – 상대적 저가'
         else:
             note = '중심선 위 – 상대적 고가'
-        width = last.get('BB_WIDTH')
-        if _valid(width) and width < df['BB_WIDTH'].tail(120).quantile(0.2):
+        if last.get('bb_squeeze'):
             note += ' / 밴드 수축(변동성 확대 임박)'
         items.append(('볼린저밴드 %B', f'{pctb:.2f}', pts, 25, note))
     else:
         items.append(('볼린저밴드 %B', '-', 12.5, 25, '데이터 부족 (중립 처리)'))
 
     # MACD (20점): 골든크로스/히스토그램 반등
-    hist = df['MACD_HIST'].dropna()
-    if len(hist) >= 6:
-        h_now, h_prev = hist.iloc[-1], hist.iloc[-2]
-        recent_cross = ((hist.iloc[-6:-1] < 0) & (h_now > 0)).any()
-        if recent_cross:
+    h_now, h_prev = last.get('macd_hist'), last.get('macd_hist_prev')
+    if _valid(h_now):
+        if not _valid(h_prev):
+            h_prev = h_now
+        if last.get('macd_recent_cross'):
             pts, note = 20, '최근 골든크로스 발생 – 매수 신호'
         elif h_now > 0 and h_now >= h_prev:
             pts, note = 15, '시그널선 위 + 상승 모멘텀 강화'
@@ -133,9 +155,9 @@ def technical_score(df):
         items.append(('MACD', '-', 10, 20, '데이터 부족 (중립 처리)'))
 
     # 추세/이동평균 (20점): 장기 상승추세 속 눌림목을 가장 좋게 평가
-    close = last['Close']
-    ma20, ma60, ma120 = last.get('MA20'), last.get('MA60'), last.get('MA120')
-    if _valid(ma20) and _valid(ma60):
+    close = last.get('close')
+    ma20, ma60, ma120 = last.get('ma20'), last.get('ma60'), last.get('ma120')
+    if _valid(close) and _valid(ma20) and _valid(ma60):
         pts, notes = 0.0, []
         if _valid(ma120):
             if close > ma120:
@@ -158,7 +180,7 @@ def technical_score(df):
         items.append(('추세/이동평균', '-', 10, 20, '데이터 부족 (중립 처리)'))
 
     # 스토캐스틱 (10점)
-    k, d = last.get('STOCH_K'), last.get('STOCH_D')
+    k, d = last.get('stoch_k'), last.get('stoch_d')
     if _valid(k) and _valid(d):
         pts = _interp(k, [10, 20, 50, 80, 90], [8, 7, 4, 1, 0])
         note = '과매도' if k < 20 else ('과매수' if k > 80 else '중립')
